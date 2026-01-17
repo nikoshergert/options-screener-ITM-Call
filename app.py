@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime
+import time
 
 # --- 1. FUNKTIONEN ---
 
@@ -33,7 +34,7 @@ def get_market_data(tickers):
 
 # --- 2. OBERFLÄCHE ---
 
-st.set_page_config(page_title="Options Screener Pro", layout="wide")
+st.set_page_config(page_title="Options Pro Live", layout="wide")
 st.title("🎯 ITM Covered Call Screener Pro")
 
 st.sidebar.header("Strategie-Filter")
@@ -49,67 +50,77 @@ min_vola = st.sidebar.slider("Mindest Vola %", 10, 50, 25)
 
 ticker_data = get_sp500_tickers_with_sectors()
 selected_tickers = ticker_data[:anzahl_ticker]
+total_count = len(selected_tickers)
 
-with st.status("Suche nach Kandidaten...", expanded=True) as status:
-    data_all = get_market_data(selected_tickers['Symbol'].tolist())
-    results = []
-    today = datetime.now().date()
+# Platzhalter für Fortschritt
+progress_bar = st.progress(0)
+status_text = st.empty()
 
-    for idx, row in selected_tickers.iterrows():
-        ticker = row['Symbol']
-        try:
-            if ticker not in data_all.columns.get_level_values(0): continue
-            df = data_all[ticker].dropna()
-            if len(df) < 200: continue
+data_all = get_market_data(selected_tickers['Symbol'].tolist())
+results = []
+today = datetime.now().date()
+
+for i, (idx, row) in enumerate(selected_tickers.iterrows()):
+    ticker = row['Symbol']
+    # Fortschritt aktualisieren
+    percent_complete = int(((i + 1) / total_count) * 100)
+    progress_bar.progress(percent_complete)
+    status_text.text(f"Analysiere {i+1} von {total_count}: {ticker}")
+
+    try:
+        if ticker not in data_all.columns.get_level_values(0): continue
+        df = data_all[ticker].dropna()
+        if len(df) < 200: continue
+        
+        curr_price = float(df['Close'].iloc[-1])
+        vola = np.log(df['Close'] / df['Close'].shift(1)).tail(30).std() * np.sqrt(252) * 100
+        sma200 = df['Close'].rolling(window=200).mean().iloc[-1]
+
+        # FILTER
+        if curr_price > preis_val: continue
+        if use_sma and curr_price < sma200: continue
+        if vola < min_vola: continue
+
+        # Nur für gefilterte Aktien Info laden (spart Zeit)
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        if info.get('profitMargins', 0) < 0.05: continue
+
+        days_to_earn = 999
+        cal = stock.calendar
+        if cal is not None and 'Earnings Date' in cal:
+            next_earn = cal['Earnings Date'][0]
+            if hasattr(next_earn, 'date'): next_earn = next_earn.date()
+            days_to_earn = (next_earn - today).days
+
+        if days_to_earn > 4:
+            trade_dte = 30
+            if days_to_earn < 35: trade_dte = max(5, days_to_earn - 2)
             
-            curr_price = float(df['Close'].iloc[-1])
-            vola = np.log(df['Close'] / df['Close'].shift(1)).tail(30).std() * np.sqrt(252) * 100
-            sma200 = df['Close'].rolling(window=200).mean().iloc[-1]
-
-            # BASIS-FILTER
-            if curr_price > preis_val: continue
-            if use_sma and curr_price < sma200: continue
-            if vola < min_vola: continue
-
-            # Earnings & Beta Abfrage
-            stock = yf.Ticker(ticker)
-            info = stock.info # Hier holen wir Beta & Margin
+            strike, opt_price, net_debit, ann_yield = calculate_full_details(curr_price, vola, trade_dte)
+            puffer = round(((curr_price/strike)-1)*100, 1)
             
-            # Stabilitäts-Check
-            if info.get('profitMargins', 0) < 0.05: continue
+            if puffer >= puffer_val:
+                score = round(ann_yield * (puffer / 10), 2)
+                results.append({
+                    'Ticker': ticker, 'Preis': round(curr_price, 2), 'Vola%': round(vola, 1),
+                    'Laufzeit': trade_dte, 'Strike': strike, 'Puffer %': puffer,
+                    'Rendite p.a.%': ann_yield, 'Score': score, 'Earn in Tg': days_to_earn,
+                    'Sektor': row['GICS Sector'], 'Beta': info.get('beta', 'N/A'),
+                    'Support': round(sma200, 2), 'RealePrämie$': opt_price, 'NetDebit$': net_debit
+                })
+    except:
+        continue
 
-            days_to_earn = 999
-            cal = stock.calendar
-            if cal is not None and 'Earnings Date' in cal:
-                next_earn = cal['Earnings Date'][0]
-                if hasattr(next_earn, 'date'): next_earn = next_earn.date()
-                days_to_earn = (next_earn - today).days
-
-            if days_to_earn > 4:
-                trade_dte = 30
-                if days_to_earn < 35: trade_dte = max(5, days_to_earn - 2)
-                
-                strike, opt_price, net_debit, ann_yield = calculate_full_details(curr_price, vola, trade_dte)
-                puffer = round(((curr_price/strike)-1)*100, 1)
-                
-                if puffer >= puffer_val:
-                    score = round(ann_yield * (puffer / 10), 2)
-                    results.append({
-                        'Ticker': ticker, 'Preis': round(curr_price, 2), 'Vola%': round(vola, 1),
-                        'Laufzeit': trade_dte, 'Strike': strike, 'Puffer %': puffer,
-                        'Rendite p.a.%': ann_yield, 'Score': score, 'Earn in Tg': days_to_earn,
-                        'Sektor': row['GICS Sector'], 'Beta': info.get('beta', 'N/A'),
-                        'Support': round(sma200, 2), 'RealePrämie$': opt_price, 'NetDebit$': net_debit
-                    })
-                    st.write(f"⭐ {ticker} (Beta: {info.get('beta', 'N/A')}) erfüllt Kriterien!")
-        except: continue
-
-    status.update(label="Analyse fertig!", state="complete", expanded=False)
+# Nach Abschluss Balken und Text löschen
+progress_bar.empty()
+status_text.empty()
 
 df_result = pd.DataFrame(results)
 
 if not df_result.empty:
-    # Anzeige der finalen Tabelle
+    st.success(f"Analyse fertig! {len(df_result)} Kandidaten gefunden.")
     st.dataframe(df_result.sort_values(by='Score', ascending=False), use_container_width=True)
 else:
-    st.warning("Keine Treffer gefunden. Versuche den Puffer zu senken oder SMA200 zu deaktivieren.")
+    st.warning("Keine Treffer gefunden. Tipp: Puffer senken oder SMA200-Filter deaktivieren.")
