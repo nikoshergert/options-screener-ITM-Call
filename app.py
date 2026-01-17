@@ -29,7 +29,6 @@ def calculate_full_details(price, vola, days):
 
 @st.cache_data(ttl=1800)
 def get_market_data(tickers):
-    # Wir laden etwas mehr Daten für SMA-Berechnung
     return yf.download(tickers, period="2y", interval="1d", group_by='ticker', progress=False)
 
 # --- 2. OBERFLÄCHE ---
@@ -39,7 +38,7 @@ st.title("🎯 ITM Covered Call Screener Pro")
 
 st.sidebar.header("Strategie-Filter")
 puffer_val = st.sidebar.slider("Mindest Puffer %", 0.0, 15.0, 4.0)
-preis_val = st.sidebar.slider("Max Aktienpreis $", 50, 1500, 500)
+preis_val = st.sidebar.slider("Max Aktienpreis $", 50, 2000, 500)
 anzahl_ticker = st.sidebar.selectbox("Scan-Tiefe (S&P 500)", [50, 100, 250, 500], index=1)
 
 st.sidebar.subheader("Sicherheits-Optionen")
@@ -67,13 +66,18 @@ with st.status("Suche nach Kandidaten...", expanded=True) as status:
             vola = np.log(df['Close'] / df['Close'].shift(1)).tail(30).std() * np.sqrt(252) * 100
             sma200 = df['Close'].rolling(window=200).mean().iloc[-1]
 
-            # FILTER-LOGIK
+            # BASIS-FILTER
             if curr_price > preis_val: continue
             if use_sma and curr_price < sma200: continue
             if vola < min_vola: continue
 
-            # Earnings
+            # Earnings & Beta Abfrage
             stock = yf.Ticker(ticker)
+            info = stock.info # Hier holen wir Beta & Margin
+            
+            # Stabilitäts-Check
+            if info.get('profitMargins', 0) < 0.05: continue
+
             days_to_earn = 999
             cal = stock.calendar
             if cal is not None and 'Earnings Date' in cal:
@@ -81,7 +85,6 @@ with st.status("Suche nach Kandidaten...", expanded=True) as status:
                 if hasattr(next_earn, 'date'): next_earn = next_earn.date()
                 days_to_earn = (next_earn - today).days
 
-            # Nur wenn Earnings mind. 4 Tage weg sind (sehr kurzfristig möglich)
             if days_to_earn > 4:
                 trade_dte = 30
                 if days_to_earn < 35: trade_dte = max(5, days_to_earn - 2)
@@ -95,10 +98,10 @@ with st.status("Suche nach Kandidaten...", expanded=True) as status:
                         'Ticker': ticker, 'Preis': round(curr_price, 2), 'Vola%': round(vola, 1),
                         'Laufzeit': trade_dte, 'Strike': strike, 'Puffer %': puffer,
                         'Rendite p.a.%': ann_yield, 'Score': score, 'Earn in Tg': days_to_earn,
-                        'Sektor': row['GICS Sector'], 'Support': round(sma200, 2),
-                        'RealePrämie$': opt_price, 'NetDebit$': net_debit
+                        'Sektor': row['GICS Sector'], 'Beta': info.get('beta', 'N/A'),
+                        'Support': round(sma200, 2), 'RealePrämie$': opt_price, 'NetDebit$': net_debit
                     })
-                    st.write(f"⭐ {ticker} erfüllt alle Kriterien!")
+                    st.write(f"⭐ {ticker} (Beta: {info.get('beta', 'N/A')}) erfüllt Kriterien!")
         except: continue
 
     status.update(label="Analyse fertig!", state="complete", expanded=False)
@@ -106,6 +109,7 @@ with st.status("Suche nach Kandidaten...", expanded=True) as status:
 df_result = pd.DataFrame(results)
 
 if not df_result.empty:
+    # Anzeige der finalen Tabelle
     st.dataframe(df_result.sort_values(by='Score', ascending=False), use_container_width=True)
 else:
-    st.warning("Keine Treffer gefunden. Tipp: Deaktiviere 'Nur Aufwärtstrend' in der Sidebar oder senke den Puffer.")
+    st.warning("Keine Treffer gefunden. Versuche den Puffer zu senken oder SMA200 zu deaktivieren.")
