@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime
-import time
 
 # --- 1. FUNKTIONEN ---
 
@@ -28,99 +27,94 @@ def calculate_full_details(price, vola, days):
     ann_yield = (extrinsic / max(net_debit, 0.01)) * (365 / max(days, 1)) * 100
     return round(strike, 2), round(opt_price, 2), round(net_debit, 2), round(ann_yield, 1)
 
-@st.cache_data(ttl=1800)
-def get_market_data(tickers):
-    return yf.download(tickers, period="2y", interval="1d", group_by='ticker', progress=False)
-
 # --- 2. OBERFLÄCHE ---
+st.set_page_config(page_title="Options Pro 500", layout="wide")
+st.title("🎯 S&P 500 Full-Screener")
 
-st.set_page_config(page_title="Options Pro Live", layout="wide")
-st.title("🎯 ITM Covered Call Screener Pro")
+st.sidebar.header("Filter")
+puffer_val = st.sidebar.slider("Puffer %", 0.0, 15.0, 4.0)
+preis_val = st.sidebar.slider("Max Preis $", 50, 2000, 500)
+anzahl_ticker = st.sidebar.selectbox("Scan-Tiefe", [50, 100, 250, 500], index=1)
+use_sma = st.sidebar.checkbox("Nur Aufwärtstrend (SMA200)", value=False)
 
-st.sidebar.header("Strategie-Filter")
-puffer_val = st.sidebar.slider("Mindest Puffer %", 0.0, 15.0, 4.0)
-preis_val = st.sidebar.slider("Max Aktienpreis $", 50, 2000, 500)
-anzahl_ticker = st.sidebar.selectbox("Scan-Tiefe (S&P 500)", [50, 100, 250, 500], index=1)
-
-st.sidebar.subheader("Sicherheits-Optionen")
-use_sma = st.sidebar.checkbox("Nur Aufwärtstrend (Preis > SMA200)", value=False)
-min_vola = st.sidebar.slider("Mindest Vola %", 10, 50, 25)
-
-# --- 3. LOGIK ---
+# --- 3. LOGIK MIT BATCHING ---
 
 ticker_data = get_sp500_tickers_with_sectors()
 selected_tickers = ticker_data[:anzahl_ticker]
-total_count = len(selected_tickers)
 
-# Platzhalter für Fortschritt
-progress_bar = st.progress(0)
-status_text = st.empty()
-
-data_all = get_market_data(selected_tickers['Symbol'].tolist())
-results = []
-today = datetime.now().date()
-
-for i, (idx, row) in enumerate(selected_tickers.iterrows()):
-    ticker = row['Symbol']
-    # Fortschritt aktualisieren
-    percent_complete = int(((i + 1) / total_count) * 100)
-    progress_bar.progress(percent_complete)
-    status_text.text(f"Analysiere {i+1} von {total_count}: {ticker}")
-
-    try:
-        if ticker not in data_all.columns.get_level_values(0): continue
-        df = data_all[ticker].dropna()
-        if len(df) < 200: continue
+if st.button("Großen Scan starten (Kann bei 500 etwas dauern)"):
+    results = []
+    today = datetime.now().date()
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Wir teilen die Liste in 20er Batches auf
+    batch_size = 20
+    for start_idx in range(0, len(selected_tickers), batch_size):
+        end_idx = start_idx + batch_size
+        batch = selected_tickers.iloc[start_idx:end_idx]
+        batch_symbols = batch['Symbol'].tolist()
         
-        curr_price = float(df['Close'].iloc[-1])
-        vola = np.log(df['Close'] / df['Close'].shift(1)).tail(30).std() * np.sqrt(252) * 100
-        sma200 = df['Close'].rolling(window=200).mean().iloc[-1]
-
-        # FILTER
-        if curr_price > preis_val: continue
-        if use_sma and curr_price < sma200: continue
-        if vola < min_vola: continue
-
-        # Nur für gefilterte Aktien Info laden (spart Zeit)
-        stock = yf.Ticker(ticker)
-        info = stock.info
+        status_text.text(f"Lade Batch {start_idx}-{end_idx} von {len(selected_tickers)}...")
         
-        if info.get('profitMargins', 0) < 0.05: continue
-
-        days_to_earn = 999
-        cal = stock.calendar
-        if cal is not None and 'Earnings Date' in cal:
-            next_earn = cal['Earnings Date'][0]
-            if hasattr(next_earn, 'date'): next_earn = next_earn.date()
-            days_to_earn = (next_earn - today).days
-
-        if days_to_earn > 4:
-            trade_dte = 30
-            if days_to_earn < 35: trade_dte = max(5, days_to_earn - 2)
+        # Marktdaten nur für diesen Batch laden
+        try:
+            data_batch = yf.download(batch_symbols, period="2y", interval="1d", group_by='ticker', progress=False, threads=True)
             
-            strike, opt_price, net_debit, ann_yield = calculate_full_details(curr_price, vola, trade_dte)
-            puffer = round(((curr_price/strike)-1)*100, 1)
-            
-            if puffer >= puffer_val:
-                score = round(ann_yield * (puffer / 10), 2)
-                results.append({
-                    'Ticker': ticker, 'Preis': round(curr_price, 2), 'Vola%': round(vola, 1),
-                    'Laufzeit': trade_dte, 'Strike': strike, 'Puffer %': puffer,
-                    'Rendite p.a.%': ann_yield, 'Score': score, 'Earn in Tg': days_to_earn,
-                    'Sektor': row['GICS Sector'], 'Beta': info.get('beta', 'N/A'),
-                    'Support': round(sma200, 2), 'RealePrämie$': opt_price, 'NetDebit$': net_debit
-                })
-    except:
-        continue
+            for ticker in batch_symbols:
+                try:
+                    df = data_batch[ticker].dropna()
+                    if len(df) < 200: continue
+                    
+                    curr_price = float(df['Close'].iloc[-1])
+                    vola = np.log(df['Close'] / df['Close'].shift(1)).tail(30).std() * np.sqrt(252) * 100
+                    sma200 = df['Close'].rolling(window=200).mean().iloc[-1]
 
-# Nach Abschluss Balken und Text löschen
-progress_bar.empty()
-status_text.empty()
+                    if curr_price > preis_val: continue
+                    if use_sma and curr_price < sma200: continue
+                    if vola < 20: continue
 
-df_result = pd.DataFrame(results)
+                    stock = yf.Ticker(ticker)
+                    info = stock.info
+                    
+                    # Schneller Check
+                    if info.get('profitMargins', 0) < 0.05: continue
 
-if not df_result.empty:
-    st.success(f"Analyse fertig! {len(df_result)} Kandidaten gefunden.")
-    st.dataframe(df_result.sort_values(by='Score', ascending=False), use_container_width=True)
-else:
-    st.warning("Keine Treffer gefunden. Tipp: Puffer senken oder SMA200-Filter deaktivieren.")
+                    # Earnings
+                    days_to_earn = 999
+                    cal = stock.calendar
+                    if cal is not None and 'Earnings Date' in cal:
+                        next_earn = cal['Earnings Date'][0]
+                        if hasattr(next_earn, 'date'): next_earn = next_earn.date()
+                        days_to_earn = (next_earn - today).days
+
+                    if days_to_earn > 4:
+                        trade_dte = 30
+                        if days_to_earn < 35: trade_dte = max(5, days_to_earn - 2)
+                        
+                        strike, opt_price, net_debit, ann_yield = calculate_full_details(curr_price, vola, trade_dte)
+                        puffer = round(((curr_price/strike)-1)*100, 1)
+                        
+                        if puffer >= puffer_val:
+                            results.append({
+                                'Ticker': ticker, 'Preis': curr_price, 'Vola%': round(vola, 1),
+                                'Laufzeit': trade_dte, 'Strike': strike, 'Puffer %': puffer,
+                                'Rendite p.a.%': ann_yield, 'Score': round(ann_yield * (puffer / 10), 2),
+                                'Earn in Tg': days_to_earn, 'Beta': info.get('beta', 'N/A'),
+                                'RealePrämie$': opt_price, 'NetDebit$': net_debit
+                            })
+                except: continue
+        except: continue
+        
+        # Fortschrittsbalken aktualisieren
+        progress_bar.progress(min(end_idx / len(selected_tickers), 1.0))
+
+    status_text.empty()
+    progress_bar.empty()
+    
+    df_result = pd.DataFrame(results)
+    if not df_result.empty:
+        st.success(f"Fertig! {len(df_result)} Kandidaten gefunden.")
+        st.dataframe(df_result.sort_values(by='Score', ascending=False), use_container_width=True)
+    else:
+        st.warning("Keine Treffer bei 500 Aktien. Prüfe die Filter.")
