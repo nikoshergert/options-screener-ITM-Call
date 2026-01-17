@@ -92,7 +92,7 @@ st.write("Diese App findet stabile Aktien für deine Cashflow-Strategie.")
 st.sidebar.header("Filter-Einstellungen")
 puffer_val = st.sidebar.slider("Mindest Puffer %", 0.0, 15.0, 5.0)
 preis_val = st.sidebar.slider("Maximaler Aktienpreis $", 50, 1000, 300)
-anzahl_ticker = st.sidebar.selectbox("Anzahl zu prüfender Aktien", [50, 100, 250, 500], index=1)
+anzahl_ticker = st.sidebar.selectbox("Anzahl zu prüfender Aktien", index=1)
 
 if st.button("Markt jetzt scannen"):
     with st.spinner(f"Analysiere die ersten {anzahl_ticker} S&P 500 Aktien..."):
@@ -115,3 +115,4 @@ if st.button("Markt jetzt scannen"):
             st.download_button("Liste als CSV speichern", csv, "options_trades.csv", "text/csv")
         else:
             st.warning("Keine Treffer gefunden. Versuche den Puffer zu verringern oder den Preis zu erhöhen.")
+
