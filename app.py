@@ -63,12 +63,21 @@ if st.button("Kombinierten Scan starten"):
     ticker_data = get_tickers_pro()
     results = []
     today = datetime.now().date()
-    progress_bar = st.progress(0)
+    
     all_symbols = ticker_data['Symbol'].tolist()
+    total_tickers = len(all_symbols)
+    
+    status_text = st.empty()
+    progress_bar = st.progress(0)
     
     batch_size = 40
-    for i in range(0, len(all_symbols), batch_size):
+    processed_count = 0
+
+    for i in range(0, total_tickers, batch_size):
         batch = all_symbols[i:i+batch_size]
+        processed_count = min(i + batch_size, total_tickers)
+        status_text.text(f"Analysiere Aktie {processed_count} von {total_tickers}...")
+        
         try:
             data = yf.download(batch, period="2y", group_by='ticker', progress=False)
             for ticker in batch:
@@ -94,13 +103,11 @@ if st.button("Kombinierten Scan starten"):
                         if hasattr(next_earn, 'date'): next_earn = next_earn.date()
                         days_to_earn = (next_earn - today).days
 
-                    # --- LOGIK: ENDE VOR EARNINGS (Mindestlaufzeit 5 Tage) ---
+                    # --- LOGIK: ENDE VOR EARNINGS ---
                     trade_dte = 30 
-                    
                     if days_to_earn < 32:
                         trade_dte = days_to_earn - 2
                     
-                    # Wenn Laufzeit unter 5 Tage fällt (wegen nahen Earnings), Ticker überspringen
                     if trade_dte < 5:
                         continue
 
@@ -121,13 +128,19 @@ if st.button("Kombinierten Scan starten"):
                         })
                 except: continue
         except: continue
-        progress_bar.progress(min((i + batch_size) / len(all_symbols), 1.0))
+        progress_bar.progress(processed_count / total_tickers)
+
+    status_text.empty()
+    progress_bar.empty()
 
     if results:
         final_df = pd.DataFrame(results).sort_values(by='Score', ascending=False)
+        
+        # Statistische Anzeige
+        st.info(f"Scan abgeschlossen. Insgesamt {total_tickers} Aktien aus S&P 500 & Nasdaq 100 geprüft. {len(final_df)} Aktien erfüllen deine Kriterien.")
+        
         cols = ['Ticker', 'Preis', 'Vola%', 'Laufzeit', 'Strike', 'Puffer %', 'Rendite p.a.%', 
                 'Score', 'Earn in Tg', 'Sektor', 'Beta', 'Support', 'RealePrämie$', 'NetDebit$']
         st.dataframe(final_df[cols], use_container_width=True)
-        st.success(f"{len(final_df)} Treffer gefunden.")
     else:
-        st.warning("Keine Treffer gefunden.")
+        st.warning(f"Scan abgeschlossen ({total_tickers} geprüft). Keine Treffer gefunden.")
