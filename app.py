@@ -29,7 +29,7 @@ def calculate_full_details(price, vola, days):
 
 # --- 2. OBERFLÄCHE ---
 st.set_page_config(page_title="Options Pro 500", layout="wide")
-st.title("🎯 S&P 500 Full-Screener (inkl. Vola)")
+st.title("🎯 ITM Covered Call Screener Pro")
 
 st.sidebar.header("Filter")
 puffer_val = st.sidebar.slider("Mindest Puffer %", 0.0, 15.0, 4.0)
@@ -128,3 +128,4 @@ if st.button("Scan starten"):
         st.dataframe(df_result[cols].sort_values(by='Score', ascending=False), use_container_width=True)
     else:
         st.warning("Keine Treffer. Versuche die Filter (z.B. Vola oder Puffer) zu lockern.")
+
